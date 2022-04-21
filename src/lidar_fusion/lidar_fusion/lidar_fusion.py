@@ -18,6 +18,8 @@ class LidarFusionNode(Node):
         super().__init__('lidar_fusion_node')
 
         self.rotation_rate = rotation_rate
+        self.declare_parameter('target_frame', 'base_link')
+        self.target_frame = self.get_parameter('target_frame').get_parameter_value().string_value
         lidar_front_sub = message_filters.Subscriber(self, PointCloud2, 'lidar_front')
         lidar_rear_sub = message_filters.Subscriber(self, PointCloud2, 'lidar_rear')
         self.fusion_sync = message_filters.ApproximateTimeSynchronizer(
@@ -35,8 +37,10 @@ class LidarFusionNode(Node):
             qos_profile = 10
         )
 
+
     def tranform_point_cloud(self, pcd: np.ndarray, pcd_tf: TransformStamped):
         dtype = pcd.dtype
+
         x, y, z = pcd['x'], pcd['y'], pcd['z']
         x += pcd_tf.transform.translation.x
         y += pcd_tf.transform.translation.y
@@ -59,15 +63,15 @@ class LidarFusionNode(Node):
 
         try:
             now = rclpy.time.Time()
-            lidar_front_base_link_tf: TransformStamped = self.tf_buffer.lookup_transform(
-                'base_link',
+            lidar_front_target_tf: TransformStamped = self.tf_buffer.lookup_transform(
+                self.target_frame,
                 lidar_front_msg.header.frame_id,
                 now,
                 timeout=Duration(seconds=1.0)
             )
 
-            lidar_rear_base_link_tf: TransformStamped = self.tf_buffer.lookup_transform(
-                'base_link',
+            lidar_rear_target_tf: TransformStamped = self.tf_buffer.lookup_transform(
+                self.target_frame,
                 lidar_rear_msg.header.frame_id,
                 now,
                 timeout=Duration(seconds=1.0)
@@ -79,13 +83,16 @@ class LidarFusionNode(Node):
             return
         
         lidar_front_pcd = rnp.numpify(lidar_front_msg)
-        lidar_front_pcd = self.tranform_point_cloud(lidar_front_pcd, lidar_front_base_link_tf)
+        self.tranform_point_cloud(lidar_front_pcd, lidar_front_target_tf)
 
         lidar_rear_pcd = rnp.numpify(lidar_rear_msg)
-        lidar_rear_pcd = self.tranform_point_cloud(lidar_rear_pcd, lidar_rear_base_link_tf)
+        self.tranform_point_cloud(lidar_rear_pcd, lidar_rear_target_tf)
 
         fused_pcd = np.vstack([lidar_front_pcd, lidar_front_pcd])
-        lidar_fused_msg = rnp.msgify(PointCloud2, fused_pcd)
+        
+        lidar_fused_msg: PointCloud2 = rnp.msgify(PointCloud2, fused_pcd)
+        lidar_fused_msg.header.frame_id = 'base_link'
+        lidar_fused_msg.header.stamp = self.get_clock().now().to_msg()
         self.lidar_fused_pub.publish(lidar_fused_msg)
         
 
