@@ -20,8 +20,8 @@ class LidarFusionNode(Node):
         self.rotation_rate = rotation_rate
         self.declare_parameter('target_frame', 'base_link')
         self.target_frame = self.get_parameter('target_frame').get_parameter_value().string_value
-        lidar_front_sub = message_filters.Subscriber(self, PointCloud2, 'lidar_front')
-        lidar_rear_sub = message_filters.Subscriber(self, PointCloud2, 'lidar_rear')
+        lidar_front_sub = message_filters.Subscriber(self, PointCloud2, '/lidar_front/velodyne_points')
+        lidar_rear_sub = message_filters.Subscriber(self, PointCloud2, '/lidar_rear/velodyne_points')
         self.fusion_sync = message_filters.ApproximateTimeSynchronizer(
             fs = [lidar_front_sub, lidar_rear_sub], 
             queue_size = 1, 
@@ -33,18 +33,14 @@ class LidarFusionNode(Node):
 
         self.lidar_fused_pub = self.create_publisher(
             msg_type = PointCloud2,
-            topic = "fused_lidar",
+            topic = "lidar_fused",
             qos_profile = 10
         )
 
-
+    # point cloud fields: float32 x , float32 y, float32 z, float32 intensity, uint16 ring
+    # incoming shape from rnp: (~, 16), where 16 is the ring
     def tranform_point_cloud(self, pcd: np.ndarray, pcd_tf: TransformStamped):
-        dtype = pcd.dtype
-
-        x, y, z = pcd['x'], pcd['y'], pcd['z']
-        x += pcd_tf.transform.translation.x
-        y += pcd_tf.transform.translation.y
-        z += pcd_tf.transform.translation.z
+        pcd = pcd.flatten()
 
         rotation = R.from_quat([
             pcd_tf.transform.rotation.x,
@@ -52,15 +48,19 @@ class LidarFusionNode(Node):
             pcd_tf.transform.rotation.z,
             pcd_tf.transform.rotation.w,
         ])
+        
+        xyz = np.array([pcd['x'],pcd['y'],pcd['z']]).transpose()
+        xyz = rotation.apply(xyz).transpose()
 
-        pcd = np.stack([x,y,z], axis=-1).reshape(-1, 3)
-        pcd = rotation.apply(pcd)
-        pcd.dtype = dtype
+        pcd['x'] = xyz[0] + pcd_tf.transform.translation.x
+        pcd['y'] = xyz[1] + pcd_tf.transform.translation.y
+        pcd['z'] = xyz[2] + pcd_tf.transform.translation.z
+
+        return pcd
 
 
 
     def fuse_lidar(self, lidar_front_msg: PointCloud2, lidar_rear_msg: PointCloud2):
-
         try:
             now = rclpy.time.Time()
             lidar_front_target_tf: TransformStamped = self.tf_buffer.lookup_transform(
@@ -83,15 +83,15 @@ class LidarFusionNode(Node):
             return
         
         lidar_front_pcd = rnp.numpify(lidar_front_msg)
-        self.tranform_point_cloud(lidar_front_pcd, lidar_front_target_tf)
+        lidar_front_pcd = self.tranform_point_cloud(lidar_front_pcd, lidar_front_target_tf)
 
         lidar_rear_pcd = rnp.numpify(lidar_rear_msg)
-        self.tranform_point_cloud(lidar_rear_pcd, lidar_rear_target_tf)
+        lidar_rear_pcd = self.tranform_point_cloud(lidar_rear_pcd, lidar_rear_target_tf)
 
-        fused_pcd = np.vstack([lidar_front_pcd, lidar_front_pcd])
+        fused_pcd = np.concatenate([lidar_front_pcd, lidar_rear_pcd])
         
         lidar_fused_msg: PointCloud2 = rnp.msgify(PointCloud2, fused_pcd)
-        lidar_fused_msg.header.frame_id = 'base_link'
+        lidar_fused_msg.header.frame_id = self.target_frame
         lidar_fused_msg.header.stamp = self.get_clock().now().to_msg()
         self.lidar_fused_pub.publish(lidar_fused_msg)
         

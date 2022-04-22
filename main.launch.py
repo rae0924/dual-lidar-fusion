@@ -17,7 +17,11 @@ def generate_launch_description():
     lidar_fusion = Node(
         package='lidar_fusion',
         executable='lidar_fusion_node',
-        name='lidar_fusion_node'
+        name='lidar_fusion_node',
+        remappings=[
+            ('/lidar_front/velodyne_points', '/lidar_front'),
+            ('/lidar_rear/velodyne_points', '/lidar_rear'),
+        ]
     )
 
     lidar_dummy = Node(
